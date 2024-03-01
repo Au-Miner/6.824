@@ -23,7 +23,12 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
-
+type MapTask struct {
+	FileName      string
+	FileIdx       int
+	AllocSucc     bool // whether allocated successfully
+	MapStatusOver bool // whether handle over. if over, we need go to next status
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
