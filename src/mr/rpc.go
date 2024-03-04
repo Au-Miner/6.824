@@ -1,33 +1,22 @@
 package mr
 
-//
-// RPC definitions.
-//
-// remember to capitalize all names.
-//
-
 import "os"
 import "strconv"
-
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
-}
-
-type ExampleReply struct {
-	Y int
-}
 
 // Add your RPC definitions here.
 type MapTask struct {
 	FileName      string
-	FileIdx       int
 	AllocSucc     bool // whether allocated successfully
 	MapStatusOver bool // whether handle over. if over, we need go to next status
+	MapTaskId     int  // mapTaskId == fileId
+	NReduce       int  // nReduce
+}
+
+type ReduceTask struct {
+	FileNum          int  // the total number of files == mr-max-*
+	AllocSucc        bool // whether allocated successfully
+	ReduceStatusOver bool // whether handle over. if over, we need go to close the job
+	ReduceTaskId     int  // handle mr-*-ReduceTaskId
 }
 
 // Cook up a unique-ish UNIX-domain socket name

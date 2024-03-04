@@ -1,0 +1,34 @@
+const (
+	timeOut = 10 * time.Second
+)
+
+func (m *Master) checkMapTaskSuccessful(taskId int) bool {
+	return true
+}
+
+
+go func(id int) {
+	time.Sleep(timeOut)
+	if !m.checkMapTaskSuccessful(id) {
+
+	}
+
+	ch := make(chan int)
+	for {
+		select {
+		//case <-time.After(timeOut):
+		//	if !m.checkMapTaskSuccessful(id) {
+		//
+		//	}
+		//	break
+		case i := <-ch:
+			fmt.Println(i)
+			break
+		}
+	}
+
+	for i := range ch {
+		fmt.Println(i)
+	}
+}(mapTask.MapTaskId)
+break
