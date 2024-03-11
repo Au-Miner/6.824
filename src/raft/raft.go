@@ -136,8 +136,8 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
-	e.Encode(rf.lastIncludedTerm)
 	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -160,7 +160,7 @@ func (rf *Raft) readPersist(data []byte) {
 		d.Decode(&log) != nil ||
 		d.Decode(&lastIncludedIndex) != nil ||
 		d.Decode(&lastIncludedTerm) != nil {
-		Logger.Infof("Raft server %d readPersist ERROR!\n", rf.me)
+		Logger.Debugf("Raft server %d readPersist ERROR!\n", rf.me)
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
@@ -288,8 +288,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	newLogEntry := LogEntry{Term: term, Index: index, Command: command}
 	rf.log = append(rf.log, newLogEntry)
 	rf.persist()
-	Logger.Infof("[Start]Client sends a new commad(%v) to Leader %d!", command, rf.me)
-	Logger.Infof("the log of leader %v has changed to %v", rf.me, rf.log)
+	Logger.Debugf("[Start]Client sends a new commad(%v) to Leader %d!", command, rf.me)
+	Logger.Debugf("the log of leader %v has changed to %v", rf.me, rf.log)
 
 	return index, term, isLeader
 }
@@ -352,7 +352,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 	rf.persist()
 
-	Logger.Infof("Server %v (Re)Start and lastIncludedIndex=%v, rf.lastIncludedTerm=%v\n", rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm)
+	Logger.Debugf("Server %v (Re)Start and lastIncludedIndex=%v, rf.lastIncludedTerm=%v\n", rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm)
 	go rf.HandleTimeout()
 	go rf.applier()
 
@@ -360,7 +360,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) HandleTimeout() {
-	Logger.Infof("%v handle timeout", rf.me)
+	Logger.Debugf("%v handle timeout", rf.me)
 	for {
 		select {
 		case <-rf.timeout.C:
@@ -427,7 +427,7 @@ func (rf *Raft) Go2Election() {
 		}
 
 		go func(peerId int) {
-			Logger.Infof("%v send request vote to %v", rf.me, peerId)
+			Logger.Debugf("%v send request vote to %v", rf.me, peerId)
 			rf.mu.Lock()
 			args := &RequestVoteArgs{
 				Term:         nowTerm,
@@ -439,7 +439,7 @@ func (rf *Raft) Go2Election() {
 			reply := &RequestVoteReply{}
 			ok := rf.sendRequestVote(peerId, args, reply)
 			if !ok {
-				Logger.Infof("Candidate %d call server %d for RequestVote failed!\n", rf.me, peerId)
+				Logger.Debugf("Candidate %d call server %d for RequestVote failed!\n", rf.me, peerId)
 			}
 
 			rf.mu.Lock()
@@ -481,7 +481,7 @@ func (rf *Raft) Go2Election() {
 			return
 		} else if finish == len(rf.peers) {
 			voteMu.Unlock()
-			Logger.Infof("%v failed in the election and continued to wait...", rf.me)
+			Logger.Debugf("%v failed in the election and continued to wait...", rf.me)
 			return
 		}
 	}
@@ -491,7 +491,7 @@ func (rf *Raft) Convert2Follower() {
 	rf.state = Follower
 	rf.votedFor = -1
 	rf.persist()
-	Logger.Infof("%v convert to Follower", rf.me)
+	Logger.Debugf("%v convert to Follower", rf.me)
 }
 
 func (rf *Raft) Convert2Candidate() {
@@ -503,14 +503,14 @@ func (rf *Raft) Convert2Candidate() {
 	rf.currentTerm++
 	rf.leaderId = -1
 	rf.persist()
-	Logger.Infof("%v convert to Candidate", rf.me)
+	Logger.Debugf("%v convert to Candidate", rf.me)
 }
 
 func (rf *Raft) Convert2Leader() {
 	rf.mu.Lock()
 	rf.state = Leader
 	rf.leaderId = rf.me
-	Logger.Infof("%v convert to Leader", rf.me)
+	Logger.Debugf("%v convert to Leader", rf.me)
 
 	maxIndex := rf.log[len(rf.log)-1].Index
 	rf.nextIndex = make([]int, len(rf.peers))
@@ -561,7 +561,9 @@ func (rf *Raft) LeaderAppendEntries() {
 			}
 			entries := []LogEntry{}
 			startIndex := rf.nextIndex[idx] - rf.lastIncludedIndex
-			if rf.nextIndex[idx]-rf.lastIncludedIndex < len(rf.log) {
+			Logger.Infof("rf.nextIndex[idx]: %v, rf.lastIncludedIndex: %v", rf.nextIndex[idx], rf.lastIncludedIndex)
+			Logger.Infof("startIndex: %v, len(rf.log): %v", startIndex, len(rf.log))
+			if startIndex < len(rf.log) {
 				entries = make([]LogEntry, len(rf.log)-startIndex)
 				copy(entries, rf.log[startIndex:])
 			}
@@ -574,15 +576,20 @@ func (rf *Raft) LeaderAppendEntries() {
 				LeaderCommit: rf.commitIndex,
 			}
 			reply := &AppendEntriesReply{}
+			Logger.Infof("args: %v", args)
+			Logger.Infof("log: %v, from %v to %v", rf.log, rf.me, idx)
 			rf.mu.Unlock()
-			Logger.Infof("Leader %v sends AppendEntries RPC(term:%d, Entries len:%d) to server %d...\n", rf.me, nowTerm, len(args.Entries), idx)
+			Logger.Debugf("Leader %v sends AppendEntries RPC(term:%d, Entries len:%d) to server %d...\n", rf.me, nowTerm, len(args.Entries), idx)
 			ok := rf.sendAppendEntries(idx, args, reply)
 			if !ok {
-				Logger.Infof("%v fail send AppendEntries to %v", rf.me, idx)
+				Logger.Debugf("%v fail send AppendEntries to %v", rf.me, idx)
 				return
 			}
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
+
+			Logger.Infof("reply: %v", reply)
+
 			if rf.state != Leader || rf.currentTerm != nowTerm {
 				return
 			}
@@ -618,16 +625,16 @@ func (rf *Raft) LeaderAppendEntries() {
 					} else {
 						possibleNextIdx = reply.ConflictIndex
 					}
-					// 问题：为什么更新possibleNextIdx时候需要判断>rf.matchIndex[idx]
-					// 思考：感觉这里永远不会发生，待验证
-					// 解决：会发生，当leader重启，nextIndex[]会变为last_log_index + 1
-					if possibleNextIdx < rf.nextIndex[idx] && possibleNextIdx > rf.matchIndex[idx] {
-						Logger.Infof("%v 真的发生了nextIndex>matchIndex+1的情况", rf.me)
-						rf.nextIndex[idx] = possibleNextIdx
-					} else {
-						Logger.Infof("%v find index rollback old message", rf.me)
-						return
-					}
+				}
+				// 问题：为什么更新possibleNextIdx时候需要判断>rf.matchIndex[idx]
+				// 思考：感觉这里永远不会发生，待验证
+				// 解决：会发生，当leader重启，nextIndex[]会变为last_log_index + 1
+				if possibleNextIdx < rf.nextIndex[idx] && possibleNextIdx > rf.matchIndex[idx] {
+					Logger.Infof("%v 真的发生了nextIndex>matchIndex+1的情况", rf.me)
+					rf.nextIndex[idx] = possibleNextIdx
+				} else {
+					Logger.Debugf("%v find index rollback old message", rf.me)
+					return
 				}
 			} else {
 				rf.matchIndex[idx] = max(rf.matchIndex[idx], args.PreLogIndex+len(args.Entries))
@@ -644,7 +651,7 @@ func (rf *Raft) LeaderAppendEntries() {
 				for ; N > rf.commitIndex; N-- {
 					if rf.log[N-rf.lastIncludedIndex].Term == nowTerm {
 						rf.commitIndex = N
-						Logger.Infof("Leader%d's commitIndex is updated to %d.\n", rf.me, N)
+						Logger.Debugf("Leader%d's commitIndex is updated to %d.\n", rf.me, N)
 						break
 					}
 				}
@@ -671,7 +678,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = -1
 		rf.persist()
 	}
-	//Logger.Infof("%v 接受到了entry，Timer完成重制", rf.me)
+	//Logger.Debugf("%v 接受到了entry，Timer完成重制", rf.me)
 	rf.timeout.Stop()
 	rf.timeout.Reset(time.Duration(MyRand(300, 500)) * time.Millisecond)
 
@@ -720,12 +727,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		if findSucc {
 			rf.log = append(rf.log[:logStartIndex], args.Entries[logStartIndex+rf.lastIncludedIndex-args.PreLogIndex-1:]...)
-			Logger.Infof("the log of follower %v has changed to %v", rf.me, rf.log)
+			Logger.Debugf("the log of follower %v has changed to %v", rf.me, rf.log)
 		}
 		rf.persist()
 
 		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = min(rf.commitIndex, rf.log[len(rf.log)-1].Index)
+			rf.commitIndex = min(args.LeaderCommit, rf.log[len(rf.log)-1].Index)
 		}
 	}
 }
@@ -742,9 +749,9 @@ func (rf *Raft) applier() {
 			} else {
 				applyMsg := ApplyMsg{
 					CommandValid: true,
-					Command:      rf.log[rf.lastApplied-rf.lastApplied].Command,
-					CommandTerm:  rf.log[rf.lastApplied-rf.lastApplied].Term,
-					CommandIndex: rf.log[rf.lastApplied-rf.lastApplied].Index,
+					Command:      rf.log[rf.lastApplied-rf.lastIncludedIndex].Command,
+					CommandTerm:  rf.log[rf.lastApplied-rf.lastIncludedIndex].Term,
+					CommandIndex: rf.log[rf.lastApplied-rf.lastIncludedIndex].Index,
 				}
 				rf.mu.Unlock()
 				rf.applyCh <- applyMsg
