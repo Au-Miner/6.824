@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"6.824/raft"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -143,33 +144,33 @@ func Worker(mapf func(string, string) []KeyValue,
 	status := 0
 	for {
 		if status == 0 {
-			Logger.Info("now prepare to require map task")
+			raft.Logger.Info("now prepare to require map task")
 			mapTask := CallRequestMapTask()
-			Logger.Info("mapTask: ", mapTask)
+			raft.Logger.Info("mapTask: ", mapTask)
 			if mapTask.AllocSucc {
-				Logger.Info("require map task successfully")
-				Logger.Info("prepare to handle map task")
+				raft.Logger.Info("require map task successfully")
+				raft.Logger.Info("prepare to handle map task")
 				// handle map task code here
 				handleMapTask(mapTask, mapf)
 				CallResponseMapTask(mapTask.MapTaskId)
-				Logger.Info("handle map task successfully")
+				raft.Logger.Info("handle map task successfully")
 			} else if mapTask.MapStatusOver {
 				status = 1
-				Logger.Info("===========================")
+				raft.Logger.Info("===========================")
 			} else {
 				time.Sleep(time.Millisecond * 500)
 			}
 		} else if status == 1 {
-			Logger.Info("now prepare to require reduce task")
+			raft.Logger.Info("now prepare to require reduce task")
 			reduceTask := CallRequestReduceTask()
-			Logger.Info("reduceTask: ", reduceTask)
+			raft.Logger.Info("reduceTask: ", reduceTask)
 			if reduceTask.AllocSucc {
-				Logger.Info("require reduce task successfully")
-				Logger.Info("prepare to handle reduce task")
+				raft.Logger.Info("require reduce task successfully")
+				raft.Logger.Info("prepare to handle reduce task")
 				// handle map task code here
 				handleReduceTask(reduceTask, reducef)
 				CallResponseReduceTask(reduceTask.ReduceTaskId)
-				Logger.Info("handle reduce task successfully")
+				raft.Logger.Info("handle reduce task successfully")
 			} else if reduceTask.ReduceStatusOver {
 				status = 2
 				// TODO: maybe we should kill this process(now we just return)

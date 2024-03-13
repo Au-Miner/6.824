@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"6.824/raft"
 	"log"
 	"sync"
 	"time"
@@ -75,10 +76,10 @@ func (m *Master) SolveMapTask(mapTaskId *int, mapTask *MapTask) error {
 			}
 		}
 		if mapTask.MapStatusOver == true {
-			Logger.Info("all the files have been handled over!!!")
+			raft.Logger.Info("all the files have been handled over!!!")
 		}
 		if mapTask.AllocSucc == false {
-			Logger.Info("all the files have been allocated!!!")
+			raft.Logger.Info("all the files have been allocated!!!")
 		} else {
 			go func(mapTaskId int) {
 				time.Sleep(timeout)
@@ -110,10 +111,10 @@ func (m *Master) SolveReduceTask(reduceTaskId *int, reduceTask *ReduceTask) erro
 			}
 		}
 		if reduceTask.ReduceStatusOver == true {
-			Logger.Info("all the files have been handled over!!!")
+			raft.Logger.Info("all the files have been handled over!!!")
 		}
 		if reduceTask.AllocSucc == false {
-			Logger.Info("all the files have been allocated!!!")
+			raft.Logger.Info("all the files have been allocated!!!")
 		} else {
 			go func(ReduceTaskId int) {
 				time.Sleep(timeout)
@@ -165,9 +166,9 @@ func MakeMaster(files []string, nReduce int) *Master {
 	for i := 0; i < nReduce; i++ {
 		m.reduceTaskStatus = append(m.reduceTaskStatus, 0)
 	}
-	Logger.Info("the len of is m.files %d", len(m.files))
-	Logger.Info("the len of is m.mapTaskStatus %d", len(m.mapTaskStatus))
-	Logger.Info("the len of is m.reduceTaskStatus %d", len(m.reduceTaskStatus))
+	raft.Logger.Info("the len of is m.files %d", len(m.files))
+	raft.Logger.Info("the len of is m.mapTaskStatus %d", len(m.mapTaskStatus))
+	raft.Logger.Info("the len of is m.reduceTaskStatus %d", len(m.reduceTaskStatus))
 
 	m.server()
 	return &m

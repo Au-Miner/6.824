@@ -1,4 +1,4 @@
-package mr
+package kvraft
 
 import "os"
 import (

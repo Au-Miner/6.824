@@ -44,6 +44,10 @@ type ApplyMsg struct {
 	Command      interface{}
 	CommandIndex int
 	CommandTerm  int
+
+	SnapshotValid     bool   // 当ApplyMsg用于传快照时为true，其余时候为false
+	SnapshotIndex     int    // 本快照包含的最后一个日志的index
+	StateMachineState []byte // 状态机状态，就是快照数据
 }
 
 type ServerState int
@@ -115,15 +119,15 @@ type AppendEntriesReply struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	var term int
-	var isleader bool
+	var isLeader bool
 
 	// Your code here (2A).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	term = rf.currentTerm
-	isleader = rf.state == Leader
-	return term, isleader
+	isLeader = rf.state == Leader
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -561,8 +565,8 @@ func (rf *Raft) LeaderAppendEntries() {
 			}
 			entries := []LogEntry{}
 			startIndex := rf.nextIndex[idx] - rf.lastIncludedIndex
-			Logger.Infof("rf.nextIndex[idx]: %v, rf.lastIncludedIndex: %v", rf.nextIndex[idx], rf.lastIncludedIndex)
-			Logger.Infof("startIndex: %v, len(rf.log): %v", startIndex, len(rf.log))
+			//Logger.Infof("rf.nextIndex[idx]: %v, rf.lastIncludedIndex: %v", rf.nextIndex[idx], rf.lastIncludedIndex)
+			//Logger.Infof("startIndex: %v, len(rf.log): %v", startIndex, len(rf.log))
 			if startIndex < len(rf.log) {
 				entries = make([]LogEntry, len(rf.log)-startIndex)
 				copy(entries, rf.log[startIndex:])
@@ -576,8 +580,8 @@ func (rf *Raft) LeaderAppendEntries() {
 				LeaderCommit: rf.commitIndex,
 			}
 			reply := &AppendEntriesReply{}
-			Logger.Infof("args: %v", args)
-			Logger.Infof("log: %v, from %v to %v", rf.log, rf.me, idx)
+			//Logger.Infof("args: %v", args)
+			//Logger.Infof("log: %v, from %v to %v", rf.log, rf.me, idx)
 			rf.mu.Unlock()
 			Logger.Debugf("Leader %v sends AppendEntries RPC(term:%d, Entries len:%d) to server %d...\n", rf.me, nowTerm, len(args.Entries), idx)
 			ok := rf.sendAppendEntries(idx, args, reply)
@@ -588,7 +592,7 @@ func (rf *Raft) LeaderAppendEntries() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 
-			Logger.Infof("reply: %v", reply)
+			//Logger.Infof("reply: %v", reply)
 
 			if rf.state != Leader || rf.currentTerm != nowTerm {
 				return
@@ -627,10 +631,8 @@ func (rf *Raft) LeaderAppendEntries() {
 					}
 				}
 				// 问题：为什么更新possibleNextIdx时候需要判断>rf.matchIndex[idx]
-				// 思考：感觉这里永远不会发生，待验证
 				// 解决：会发生，当leader重启，nextIndex[]会变为last_log_index + 1
 				if possibleNextIdx < rf.nextIndex[idx] && possibleNextIdx > rf.matchIndex[idx] {
-					Logger.Infof("%v 真的发生了nextIndex>matchIndex+1的情况", rf.me)
 					rf.nextIndex[idx] = possibleNextIdx
 				} else {
 					Logger.Debugf("%v find index rollback old message", rf.me)
