@@ -45,7 +45,7 @@ type ApplyMsg struct {
 	CommandIndex int
 	CommandTerm  int
 
-	SnapshotValid     bool   // 当ApplyMsg用于传快照时为true，其余时候为false
+	SnapshotValid     bool   // 当ApplyMsg用于传snapshot时为true，其余时候为false
 	SnapshotIndex     int    // 本快照包含的最后一个日志的index
 	StateMachineState []byte // 状态机状态，就是快照数据
 }
@@ -87,8 +87,8 @@ type Raft struct {
 	applyCh       chan ApplyMsg // 用来处理log_entry
 	leaderId      int           // 已知的leaderId (init: -1)
 	// snapshot相关
-	lastIncludedIndex   int  // 上次快照替换的最后一个条目的index
-	lastIncludedTerm    int  // 上次快照替换的最后一个条目的term
+	lastIncludedIndex   int  // 上次快照替换的最后一个条目的index，需要持久化
+	lastIncludedTerm    int  // 上次快照替换的最后一个条目的term，需要持久化
 	passiveSnapshotting bool // 该raft server正在进行被动快照的标志（若为true则这期间不进行主动快照）
 	activeSnapshotting  bool // 该raft server正在进行主动快照的标志（若为true则这期间不进行被动快照）
 }
@@ -164,7 +164,7 @@ func (rf *Raft) readPersist(data []byte) {
 		d.Decode(&log) != nil ||
 		d.Decode(&lastIncludedIndex) != nil ||
 		d.Decode(&lastIncludedTerm) != nil {
-		Logger.Debugf("Raft server %d readPersist ERROR!\n", rf.me)
+		Logger.Infof("Raft server %d readPersist ERROR!\n", rf.me)
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
@@ -354,6 +354,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.recoverFromSnap(persister.ReadSnapshot())
 	rf.persist()
 
 	Logger.Debugf("Server %v (Re)Start and lastIncludedIndex=%v, rf.lastIncludedTerm=%v\n", rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm)
@@ -364,7 +365,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) HandleTimeout() {
-	Logger.Debugf("%v handle timeout", rf.me)
+	Logger.Debugf("%v start to handle timeout", rf.me)
 	for {
 		select {
 		case <-rf.timeout.C:
@@ -495,7 +496,6 @@ func (rf *Raft) Convert2Follower() {
 	rf.state = Follower
 	rf.votedFor = -1
 	rf.persist()
-	Logger.Debugf("%v convert to Follower", rf.me)
 }
 
 func (rf *Raft) Convert2Candidate() {
@@ -560,6 +560,11 @@ func (rf *Raft) LeaderAppendEntries() {
 			}
 			rf.mu.Lock()
 			if rf.state != Leader {
+				rf.mu.Unlock()
+				return
+			}
+			if rf.nextIndex[idx] <= rf.lastIncludedIndex {
+				go rf.LeaderSendSnapshot(idx, rf.persister.ReadSnapshot())
 				rf.mu.Unlock()
 				return
 			}
@@ -650,6 +655,7 @@ func (rf *Raft) LeaderAppendEntries() {
 				copy(sortMatchIndex, rf.matchIndex)
 				sort.Ints(sortMatchIndex)
 				N := sortMatchIndex[(len(sortMatchIndex)-1)>>1]
+				Logger.Debugf("N: %v, rf.lastIncludedIndex: %v, rf.commitIndex: %v, len(rf.log): %v", N, rf.lastIncludedIndex, rf.commitIndex, len(rf.log))
 				for ; N > rf.commitIndex; N-- {
 					if rf.log[N-rf.lastIncludedIndex].Term == nowTerm {
 						rf.commitIndex = N
@@ -680,10 +686,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.votedFor = -1
 		rf.persist()
 	}
-	//Logger.Debugf("%v 接受到了entry，Timer完成重制", rf.me)
 	rf.timeout.Stop()
 	rf.timeout.Reset(time.Duration(MyRand(300, 500)) * time.Millisecond)
 
+	if rf.state == Leader {
+		go rf.HandleTimeout()
+	}
 	rf.state = Follower
 	rf.leaderId = args.LeaderId
 
@@ -739,6 +747,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 }
 
+// applier是由leader提交所有已经超过一半的log
 func (rf *Raft) applier() {
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -763,4 +772,196 @@ func (rf *Raft) applier() {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+}
+
+func (rf *Raft) GetPassiveFlagAndSetActiveFlag() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if !rf.passiveSnapshotting {
+		rf.activeSnapshotting = true
+	}
+	return rf.passiveSnapshotting
+}
+
+func (rf *Raft) GetRaftStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
+// Leader进行主动快照存储，随后给每个Follower发起被动快照存储
+func (rf *Raft) ActiveSnapshot(snapshotIndex int, snapshotData []byte) {
+	if snapshotIndex <= rf.lastIncludedIndex {
+		return
+	}
+	rf.mu.Lock()
+	Logger.Infof("log的大小从%v变为了%v", len(rf.log), len(rf.log[snapshotIndex-rf.lastIncludedIndex:]))
+	rf.log = rf.log[snapshotIndex-rf.lastIncludedIndex:]
+	rf.lastIncludedIndex = rf.log[0].Index
+	rf.lastIncludedTerm = rf.log[0].Term
+	rf.persist()
+	state := rf.persister.ReadRaftState()
+	rf.persister.SaveStateAndSnapshot(state, snapshotData)
+	ifLeader := rf.state == Leader
+	rf.mu.Unlock()
+	if ifLeader {
+		for peerId := range rf.peers {
+			if peerId == rf.me {
+				continue
+			}
+			go rf.LeaderSendSnapshot(peerId, snapshotData)
+		}
+	}
+}
+
+func (rf *Raft) SetActiveSnapshottingFlag(flag bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.activeSnapshotting = flag
+}
+
+func (rf *Raft) SetPassiveSnapshottingFlag(flag bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	rf.passiveSnapshotting = flag
+}
+
+type InstallSnapshotArgs struct {
+	Term              int    // Leader的Term
+	LeaderId          int    // LeaderId
+	LastIncludedIndex int    // 快照最后一个log的index
+	LastIncludedTerm  int    // 快照最后一个log的term
+	SnapshotData      []byte //Snapshot数据
+}
+
+type InstallSnapshotReply struct {
+	Term   int  // Follower的Term
+	Accept bool // Follower是否同意Install
+}
+
+func (rf *Raft) LeaderSendSnapshot(peerId int, snapshot []byte) {
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	rf.mu.Unlock()
+	if rf.killed() {
+		return
+	}
+	rf.mu.Lock()
+	args := InstallSnapshotArgs{
+		Term:              currentTerm,
+		LeaderId:          rf.me,
+		LastIncludedIndex: rf.lastIncludedIndex,
+		LastIncludedTerm:  rf.lastIncludedTerm,
+		SnapshotData:      snapshot,
+	}
+	reply := InstallSnapshotReply{}
+	Logger.Debugf("Leader %d sends InstallSnapshot RPC(term:%d, LastIncludedIndex:%d, LastIncludedTerm:%d) to server %d...\n",
+		rf.me, currentTerm, args.LastIncludedIndex, args.LastIncludedTerm, peerId)
+	rf.mu.Unlock()
+	ok := rf.sendSnapshot(peerId, &args, &reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if !ok {
+		Logger.Infof("Leader %d calls server %d for InstallSnapshot failed!\n", rf.me, peerId)
+		return
+	}
+	if rf.state != Leader || rf.currentTerm != currentTerm {
+		return
+	}
+	if reply.Term > rf.currentTerm {
+		rf.currentTerm = reply.Term
+		rf.Convert2Follower()
+		return
+	}
+	if reply.Accept {
+		rf.matchIndex[peerId] = max(rf.matchIndex[peerId], args.LastIncludedIndex)
+		rf.nextIndex[peerId] = rf.matchIndex[peerId] + 1
+	}
+}
+
+func (rf *Raft) sendSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.PassiveSnapshot", args, reply)
+	return ok
+}
+
+// follower接受args准备读取被动快照数据
+// PassiveSnapshot -> InstallSnapshotFromLeader，让follower所在KVServer更新数据
+func (rf *Raft) PassiveSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.Term = rf.currentTerm
+	if rf.activeSnapshotting || args.Term < rf.currentTerm || args.LastIncludedIndex <= rf.lastIncludedIndex {
+		reply.Accept = false
+		return
+	}
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
+		rf.persist()
+	}
+	rf.timeout.Stop()
+	rf.timeout.Reset(time.Duration(MyRand(300, 500)) * time.Millisecond)
+
+	if rf.state == Leader {
+		go rf.HandleTimeout()
+	}
+	rf.state = Follower
+	rf.leaderId = args.LeaderId
+
+	reply.Accept = true
+	rf.lastApplied = args.LastIncludedIndex
+	if args.LastIncludedIndex > rf.commitIndex {
+		// 如果snapshot最后index超过了follower已经commit的index
+		rf.log = []LogEntry{{Term: args.LastIncludedTerm, Command: "", Index: args.LastIncludedIndex}}
+		rf.commitIndex = args.LastIncludedIndex
+	} else if rf.log[args.LastIncludedIndex-rf.lastIncludedIndex].Term != args.LastIncludedTerm {
+		// 如果log对应位置index的term与snapshot对应最后index的term不同
+		rf.log = []LogEntry{{Term: args.LastIncludedTerm, Command: "", Index: args.LastIncludedIndex}}
+		rf.commitIndex = args.LastIncludedIndex
+	} else {
+		// 如果对应相同
+		var newLog []LogEntry
+		newLog = append(newLog, rf.log[args.LastIncludedIndex-rf.lastIncludedIndex:]...)
+		rf.log = newLog
+		rf.commitIndex = max(args.LastIncludedIndex, rf.commitIndex)
+	}
+	rf.passiveSnapshotting = true
+	rf.lastIncludedIndex = args.LastIncludedIndex
+	rf.lastIncludedTerm = args.LastIncludedTerm
+	rf.persist()
+	rf.persister.SaveStateAndSnapshot(rf.persister.ReadRaftState(), args.SnapshotData)
+	rf.PassiveSnapshot2KVServer(args.LastIncludedIndex, args.SnapshotData)
+	Logger.Debugf("Server %d accept the snapshot from leader(lastIncludedIndex=%v, lastIncludedTerm=%v).\n", rf.me, rf.lastIncludedIndex, rf.lastIncludedTerm)
+}
+
+// 主动快照：LeaderKVServer创建snapshot发送LeaderRaft，LeaderRaft主动快照存储
+// 被动快照：LeaderRaft发送给所有FollowerRaft，FollowerRaft发送snapshot给FollowerKVServer
+func (rf *Raft) PassiveSnapshot2KVServer(snapshotIndex int, snapshotData []byte) {
+	applyMsg := ApplyMsg{
+		CommandValid:      false,
+		SnapshotValid:     true,
+		SnapshotIndex:     snapshotIndex,
+		StateMachineState: snapshotData,
+	}
+	rf.applyCh <- applyMsg
+	Logger.Debugf("Server %d send SnapshotMsg(snapIndex=%v) to ApplyCh.\n", rf.me, snapshotIndex)
+}
+
+func (rf *Raft) recoverFromSnap(snapshopData []byte) {
+	if snapshopData == nil || len(snapshopData) < 1 {
+		return
+	}
+	rf.lastApplied = rf.lastIncludedIndex
+	rf.commitIndex = rf.lastIncludedIndex
+	applyMsg := ApplyMsg{
+		CommandValid:      false,
+		SnapshotValid:     true,
+		SnapshotIndex:     rf.lastIncludedIndex,
+		StateMachineState: snapshopData,
+	}
+	go func(applyMsg ApplyMsg) {
+		rf.applyCh <- applyMsg // 将包含快照的ApplyMsg发送到applyCh，等待状态机处理
+	}(applyMsg)
+	Logger.Debugf("Server %d recover from crash and send SnapshotMsg to ApplyCh.\n", rf.me)
 }

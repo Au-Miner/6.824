@@ -4,6 +4,7 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,8 +46,8 @@ type KVServer struct {
 	kvDB                  map[string]string
 	sessions              map[int64]Session  // clientId -> LastCmd信息和结果
 	notifyMapCh           map[int]chan Reply // 每一个cmd发送raft返回得到的index都对应一个chan来获取raft applier到的结果
-	logLastApplied        int                // 此kvserver apply的上一个日志的index
-	passiveSnapshotBefore bool               // 标志着applyMessage上一个从channel中取出的是被动快照并已安装完
+	logLastApplied        int                // 此kvserver apply的上一个日志的index，已经commit的所有log的index
+	passiveSnapshotBefore bool               // 标志着applyMessage上一个从channel中取出的applyMsg是被动快照并已安装完
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -202,7 +203,24 @@ func (kv *KVServer) applyMessage() {
 				kv.mu.Unlock()
 				continue
 			}
-			// 有关为什么这里可以直接赋值：因为raft.lastApplied是逐一递增的，将对应的index作为CommandIndex
+
+			// 如果上一个取出的是被动快照且已安装完，则要注意排除“跨快照指令”
+			// 因为被动快照安装完后，后续的指令应该从快照结束的index之后紧接着逐个apply
+			// 样例：
+			// 1、假设leader和follower的初始rf.lastApplied都为198
+			// 2、被动快照在由LeaderRaft发送给FollowerRaft过程中，leader已经更新了一个版本给follower(rf.lastApplied->199)
+			// 3、followerRaft生成了200的applyMsg，发送到applyCh中，但followerKVServer还没读到
+			// 4、FollowerRaft获取了被动快照(rf.lastApplied->198)，并且FollowerKVServer的kv.LogLastApplied->198
+			// 5、这时候KVServer读到操作3的200applyMsg了，但这个applyMsg的CommandIndex>kv.logLastApplied
+			if kv.passiveSnapshotBefore {
+				if applyMsg.CommandIndex-kv.logLastApplied != 1 {
+					kv.mu.Unlock()
+					continue
+				}
+				kv.passiveSnapshotBefore = false
+			}
+
+			// 有关为什么这里可以直接赋值：因为raft.lastApplied是逐一递增的，将对应的index作为CommandIndex，可以保证logLastApplied递增
 			kv.logLastApplied = applyMsg.CommandIndex
 			Logger.Debugf("KVServer[%d] update logLastApplied to %d.\n", kv.me, kv.logLastApplied)
 			op, ok := applyMsg.Command.(Op)
@@ -263,12 +281,54 @@ func (kv *KVServer) applyMessage() {
 				notifyCh <- reply
 			}
 			kv.mu.Unlock()
+		} else if applyMsg.SnapshotValid {
+			Logger.Debugf("KVServer[%d] get a Snapshot applyMsg from applyCh.\n", kv.me)
+			kv.mu.Lock()
+			if applyMsg.StateMachineState != nil && len(applyMsg.StateMachineState) > 0 {
+				r := bytes.NewBuffer(applyMsg.StateMachineState)
+				d := labgob.NewDecoder(r)
+				var kvDB map[string]string
+				var sessions map[int64]Session
+				if d.Decode(&kvDB) != nil || d.Decode(&sessions) != nil {
+					Logger.Infof("KVServer %d applySnapshotToSM ERROR!\n", kv.me)
+				} else {
+					kv.kvDB = kvDB
+					kv.sessions = sessions
+				}
+				kv.logLastApplied = applyMsg.SnapshotIndex
+				kv.passiveSnapshotBefore = true
+			}
+			kv.mu.Unlock()
+			Logger.Debugf("KVServer[%d] finish a Snapshot applyMsg from applyCh.\n", kv.me)
+			kv.rf.SetPassiveSnapshottingFlag(false)
 		} else {
-
+			Logger.Infof("what? what state is pushed here?")
 		}
 	}
 }
 
+// checkSnapshotNeed -> Snapshot 发起主动快照
 func (kv *KVServer) checkSnapshotNeed() {
-
+	for !kv.killed() {
+		if !kv.rf.GetPassiveFlagAndSetActiveFlag() {
+			if kv.maxraftstate != -1 && float32(kv.rf.GetRaftStateSize())/float32(kv.maxraftstate) >= 0.9 {
+				kv.mu.Lock()
+				Logger.Debugf("KVServer[%d]: The Raft state size is approaching the maxraftstate, Start to snapshot...\n", kv.me)
+				snapshotIndex := kv.logLastApplied
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.kvDB)
+				e.Encode(kv.sessions)
+				snapshotData := w.Bytes()
+				kv.mu.Unlock()
+				if snapshotData != nil {
+					kv.rf.ActiveSnapshot(snapshotIndex, snapshotData)
+				}
+			}
+		} else {
+			Logger.Debugf("Server %v is passive snapshotting and refuses positive snapshot.", kv.me)
+		}
+		kv.rf.SetActiveSnapshottingFlag(false)
+		time.Sleep(50 * time.Millisecond)
+	}
 }

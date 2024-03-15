@@ -3,8 +3,6 @@ package main
 import "fmt"
 
 func main() {
-	mp := make(map[int]string)
-	j, i := mp[1]
-	fmt.Println(j)
-	fmt.Println(i)
+	fmt.Println(9 / 10)
+	fmt.Println(float32(9.0 / 10))
 }
