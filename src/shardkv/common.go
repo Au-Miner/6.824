@@ -10,10 +10,12 @@ package shardkv
 //
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongGroup  = "ErrWrongGroup"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK             = "OK"             // 在executeClientCmd中确定
+	ErrNoKey       = "ErrNoKey"       // 在executeClientCmd中确定
+	ErrWrongLeader = "ErrWrongLeader" // 在Get/PutAppend中确定
+	ErrWrongGroup  = "ErrWrongGroup"  // 在Get/PutAppend中确定
+	ErrTimeout     = "ErrTimeout"     // 在Get/PutAppend中确定
+	ErrNotReady    = "ErrNotReady"
 )
 
 type Err string
@@ -27,6 +29,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ClientId int64
+	CmdId    int
 }
 
 type PutAppendReply struct {
@@ -36,6 +40,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	ClientId int64
+	CmdId    int
 }
 
 type GetReply struct {

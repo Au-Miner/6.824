@@ -37,10 +37,12 @@ func nrand() int64 {
 }
 
 type Clerk struct {
-	sm       *shardmaster.Clerk
-	config   shardmaster.Config
-	make_end func(string) *labrpc.ClientEnd
+	sm       *shardmaster.Clerk             // 通过它向shardmaster发起请求
+	config   shardmaster.Config             // client所知的config，不一定是最新的config
+	make_end func(string) *labrpc.ClientEnd // 将server_name转换成clientEnd的函数
 	// You will have to modify this struct.
+	clientId   int64
+	commandNum int
 }
 
 // the tester calls MakeClerk.
@@ -55,6 +57,9 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.clientId = nrand()
+	ck.commandNum = 0
+	ck.config = ck.sm.Query(-1)
 	return ck
 }
 
@@ -63,8 +68,12 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	ck.commandNum++
+	args := GetArgs{
+		Key:      key,
+		ClientId: ck.clientId,
+		CmdId:    ck.commandNum,
+	}
 
 	for {
 		shard := key2shard(key)
@@ -76,12 +85,14 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+					Logger.Debugf("Client[%d] get the [Get] response [key:%v, value:%v].\n", ck.clientId, key, reply.Value)
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
 					break
 				}
-				// ... not ok, or ErrWrongLeader
+				// ... not ok, or ErrWrongLeader, or ErrTimeout
+				// 向该组内其他server再次发起请求
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -95,10 +106,14 @@ func (ck *Clerk) Get(key string) string {
 // shared by Put and Append.
 // You will have to modify this function.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
+	ck.commandNum++
+	args := PutAppendArgs{
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		ClientId: ck.clientId,
+		CmdId:    ck.commandNum,
+	}
 
 	for {
 		shard := key2shard(key)
@@ -112,9 +127,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					Logger.Debugf("Client[%d] get the [PutAppend] response [key:%v, value:%v, type:%v].\n", ck.clientId, key, value, op)
 					break
 				}
-				// ... not ok, or ErrWrongLeader
+				// ... not ok, or ErrWrongLeader, or ErrTimeout
+				// 向该组内其他server再次发起请求
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

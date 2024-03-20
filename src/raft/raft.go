@@ -729,7 +729,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// rf.log[startIndex + 1] <-对应-> args.Entries[0]
 		findSucc := false
 		for i, entry := range args.Entries {
-			if logStartIndex+1+i == len(rf.log) || rf.log[logStartIndex+1+i] != entry {
+			if logStartIndex+1+i == len(rf.log) || rf.log[logStartIndex+1+i].Term != entry.Term {
 				logStartIndex = logStartIndex + 1 + i
 				findSucc = true
 				break
@@ -964,4 +964,11 @@ func (rf *Raft) recoverFromSnap(snapshopData []byte) {
 		rf.applyCh <- applyMsg // 将包含快照的ApplyMsg发送到applyCh，等待状态机处理
 	}(applyMsg)
 	Logger.Debugf("Server %d recover from crash and send SnapshotMsg to ApplyCh.\n", rf.me)
+}
+
+func (rf *Raft) CheckCurrentTermLog() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.currentTerm == rf.log[len(rf.log)-1].Term
 }

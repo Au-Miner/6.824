@@ -378,3 +378,17 @@ func TestMulti(t *testing.T) {
 
 	fmt.Printf("  ... Passed\n")
 }
+
+func TestWQL(t *testing.T) {
+	groups := map[int][]string{}
+	lastShards := [NShards]int{}
+	groups[1] = []string{"x"}
+	//groups[2] = []string{"y"}
+	//for i := range lastShards {
+	//	lastShards[i] = 1
+	//}
+	Logger.Debugf("groups: %v", groups)
+	Logger.Debugf("lastShards: %v", lastShards)
+	newShards := shardLoadBalance(groups, lastShards)
+	Logger.Debugf("newShards: %v", newShards)
+}

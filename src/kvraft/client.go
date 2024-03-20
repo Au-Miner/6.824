@@ -13,7 +13,7 @@ type Clerk struct {
 	// You will have to modify this struct.
 	clientId    int64 // client唯一标识符
 	knownLeader int   // 已知的leaderId，从请求到非leader的server中的reply获取
-	commandNum  int   // command个数 (init: 0)
+	commandNum  int   // command个数 (init: 0, start from 1)
 }
 
 func nrand() int64 {

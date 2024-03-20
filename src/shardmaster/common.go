@@ -24,18 +24,28 @@ const NShards = 10
 // Please don't change this.
 type Config struct {
 	Num    int              // config number
-	Shards [NShards]int     // shard -> gid
-	Groups map[int][]string // gid -> servers[]
+	Shards [NShards]int     // shard -> gid 不同的shard可能会在相同的group中 shardNum > groupNum
+	Groups map[int][]string // gid -> servers[] 每个group都有一些server组成raft集群
 }
 
 const (
-	OK = "OK"
+	OK         = "OK"
+	ErrTimeout = "ErrTimeout"
+)
+
+const (
+	Join  = "Join"
+	Query = "Query"
+	Leave = "Leave"
+	Move  = "Move"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers  map[int][]string // new GID -> servers mappings 考虑到一次Join可能要加入多个group
+	ClientId int64
+	SeqNum   int
 }
 
 type JoinReply struct {
@@ -44,7 +54,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs     []int // 一次Join操作可能有多个group离开
+	ClientId int64
+	SeqNum   int
 }
 
 type LeaveReply struct {
@@ -53,8 +65,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard    int // 要转移的shard的序号
+	GID      int // 移动到的组的GID
+	ClientId int64
+	SeqNum   int
 }
 
 type MoveReply struct {
@@ -63,7 +77,9 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num      int // desired config number 想要查询的Config的序号
+	ClientId int64
+	SeqNum   int
 }
 
 type QueryReply struct {
